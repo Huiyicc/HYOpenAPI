@@ -8,7 +8,7 @@ import (
 	"hzer/pkg/logger"
 )
 
-//configJsonBody json request body.
+// configJsonBody json request body.
 type configJsonBody struct {
 	Id            string
 	CaptchaType   string
@@ -22,7 +22,7 @@ type configJsonBody struct {
 
 var store = base64Captcha.DefaultMemStore
 
-//getCaptcha
+// getCaptcha
 // @Summary 获取验证码
 // @Description 用于预防人机的验证码
 // @Accept json
@@ -34,7 +34,7 @@ func getCaptcha(c *gin.Context) {
 	// 	{
 	// 		ShowLineOptions: [],
 	// 		CaptchaType: "string",
-	// 		Id: '',
+	// 		ID: '',
 	// 		VerifyValue: '',
 	// 		DriverAudio: {
 	// 			Length: 6,

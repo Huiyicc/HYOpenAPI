@@ -3,6 +3,7 @@ package router
 import (
 	"github.com/gin-gonic/gin"
 	"hzer/internal/controller/api/captcha"
+	"hzer/internal/controller/api/life"
 	"hzer/internal/controller/api/tests"
 	"hzer/internal/controller/ws"
 	"hzer/internal/middleware"
@@ -25,6 +26,7 @@ func NewHTTPRouter(r *gin.Engine) {
 	captcha.GinApi(apiRouter)
 	ws.GinApi(rootRouter)
 	tests.GinApi(apiRouter)
+	life.GinApi(apiRouter)
 
 	//绑定静态资源
 	/*if isDebug {
