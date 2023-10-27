@@ -4,117 +4,160 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"hzer/configs"
+	"hzer/pkg/tokenbucket"
 	"io"
 	"net/http"
 )
 
 var (
 
-	//go:embed city.json
+	//go:embed city_list.json
 	cityRaw []byte
 )
 
-type city struct {
-	Name      string     `json:"name"` //国家
-	Provinces []struct { // 省份
-		ID    string     `json:"id"`
-		Name  string     `json:"name"`
-		Citys []struct { //城市
-			ID      string     `json:"id"`
-			Name    string     `json:"name"`
-			Countys []struct { //区
-				ID   string `json:"id"`
-				Name string `json:"name"`
-				Code string `json:"code"`
-			} `json:"zone"`
-		} `json:"zone"`
-	} `json:"zone"`
-	Datas     map[string]cityInfo
-	DatasList map[string]cityInfo // 单层字典,键为城市代码/值为地区
+// 城市数据
+type cityInteface struct {
+	citys     []citys
+	Datas     map[string]cityCache
+	DatasList map[string]cityCache // 单层字典,键为城市代码/值为地区
+}
+type citys struct {
+	Iso3166   string   `json:"ISO_3166"`
+	CountryEN string   `json:"Country_EN"`
+	CountryCN string   `json:"Country_CN"`
+	Regions   []Region `json:"Regions"`
+}
+type Region struct {
+	Name   string `json:"Name"`
+	NameEn string `json:"Name_EN"`
+	Citys  []City `json:"Citys"`
+}
+type City struct {
+	Name      string     `json:"Name"`
+	NameEn    string     `json:"Name_EN"`
+	Locations []Location `json:"Locations"`
 }
 
-type cityInfo struct {
-	ID   string
+type Location struct {
+	LocationID string `json:"LocationID"`
+	LocationEN string `json:"Location_EN"`
+	Location   string `json:"Location"`
+	Latitude   string `json:"Latitude"`
+	Longitude  string `json:"Longitude"`
+	Adcode     string `json:"Adcode"`
+}
+
+type cityCache struct {
 	Name string
 	Code string
-	Son  map[string]cityInfo // 一层层嵌套的字典,键为省/城市/地区名
+	Son  map[string]cityCache // 一层层嵌套的字典,键为省/城市/地区名
 }
 
-type T struct {
-	Message  string `json:"message"` //返回message
-	Status   int    `json:"status"`  //返回状态
-	Date     string `json:"date"`    //当前天气的当天日期
-	Time     string `json:"time"`    //系统更新时间
-	CityInfo struct {
-		City       string `json:"city"` //请求城市
-		Citykey    string `json:"citykey"`
-		CityID     string `json:"cityId"`
-		Parent     string `json:"parent"`     //上级，一般是省份
-		UpdateTime string `json:"updateTime"` //天气更新时间
-	} `json:"cityInfo"`
-	Data struct {
-		Shidu     string       `json:"shidu"`     //湿度
-		Pm25      float64      `json:"pm25"`      //pm2.5
-		Pm10      float64      `json:"pm10"`      //pm10
-		Quality   string       `json:"quality"`   //空气质量
-		Wendu     string       `json:"wendu"`     //温度
-		Ganmao    string       `json:"ganmao"`    //感冒提醒（指数）
-		Forecast  []DayWeather `json:"forecast"`  //今天+未来4天
-		Yesterday DayWeather   `json:"yesterday"` //昨天天气
-	} `json:"data"`
+type CityInfo struct {
+	Code       string        `json:"code"`
+	UpdateTime string        `json:"updateTime"`
+	FxLink     string        `json:"fxLink"`
+	Now        WeatherStatus `json:"now"`
 }
 
-type DayWeather struct {
-	Date    string `json:"date"`    //日    去掉了原来的  日字 + 星期，如  21日星期五 变成了21，星期和年月日在下面
-	High    string `json:"high"`    //当天最高温
-	Low     string `json:"low"`     //当天最低温
-	Ymd     string `json:"ymd"`     //年月日
-	Week    string `json:"week"`    //星期
-	Sunrise string `json:"sunrise"` //日出
-	Sunset  string `json:"sunset"`  //日落
-	Aqi     int    `json:"aqi"`     //空气指数
-	Fx      string `json:"fx"`      //风向
-	Fl      string `json:"fl"`      //风力
-	Type    string `json:"type"`    //天气
-	Notice  string `json:"notice"`  //天气描述
+type WeatherStatus struct {
+	ObsTime   string `json:"obsTime"`   // 数据观测时间
+	Temp      string `json:"temp"`      // 温度，默认单位：摄氏度
+	FeelsLike string `json:"feelsLike"` // 体感温度，默认单位：摄氏度
+	Icon      string `json:"icon"`      // 天气状况图标代码
+	Text      string `json:"text"`      // 天气状况的文字描述，包括阴晴雨雪等天气状态的描述
+	Wind360   string `json:"wind360"`   // 风向360角度
+	WindDir   string `json:"windDir"`   // 风向
+	WindScale string `json:"windScale"` // 风力等级
+	WindSpeed string `json:"windSpeed"` // 风速，公里/小时
+	Humidity  string `json:"humidity"`  // 相对湿度，百分比数值
+	Precip    string `json:"precip"`    // 当前小时累计降水量，默认单位：毫米
+	Pressure  string `json:"pressure"`  // 大气压强，默认单位：百帕
+	Vis       string `json:"vis"`       // 能见度，默认单位：公里
+	Cloud     string `json:"cloud"`     // 云量，百分比数值
+	Dew       string `json:"dew"`       // 露点温度.可能为空
 }
 
-var cityData city
+//
+//const (
+//	WeatherLightRain               = "小雨"
+//	WeatherLightRainToModerateRain = "小到中雨"
+//	WeatherModerateRain            = "中雨"
+//	WeatherModerateRainToHeavyRain = "中到大雨"
+//	WeatherHeavyRain               = "大雨"
+//	WeatherHeavyRainToStorm        = "大到暴雨"
+//	WeatherStorm                   = "暴雨"
+//	WeatherStormToHeavyStorm       = "暴雨到大暴雨"
+//	WeatherHeavyStorm              = "大暴雨"
+//	WeatherHeavyStormToSevereStorm = "大暴雨到特大暴雨"
+//	WeatherSevereStorm             = "特大暴雨"
+//	WeatherFreezingRain            = "冻雨"
+//	WeatherShower                  = "阵雨"
+//	WeatherThundershower           = "雷阵雨"
+//	WeatherSleet                   = "雨夹雪"
+//	WeatherThundershowerWithHail   = "雷阵雨伴有冰雹"
+//	WeatherSpit                    = "小雪"
+//	WeatherSpitToModerateSnow      = "小到中雪"
+//	WeatherModerateSnow            = "中雪"
+//	WeatherModerateSnowToHeavySnow = "中到大雪"
+//	WeatherHeavySnow               = "大雪"
+//	WeatherHeavySnowToSnowstorm    = "大到暴雪"
+//	WeatherSnowstorm               = "暴雪"
+//	WeatherSnowShower              = "阵雪"
+//	WeatherClear                   = "晴"
+//	WeatherCloudy                  = "多云"
+//	WeatherOvercast                = "阴"
+//	WeatherStrongSandstorm         = "强沙尘暴"
+//	WeatherBlowingSand             = "扬沙"
+//	WeatherSandstorm               = "沙尘暴"
+//	WeatherDuststorm               = "浮尘"
+//	WeatherMist                    = "雾"
+//	WeatherFoggy                   = "霾"
+//)
+
+var (
+	cityDatas cityInteface
+
+	rate     float64 = 10 // 每秒补充x个令牌
+	capacity float64 = 30 // 令牌桶容量为y个
+	tb               = tokenbucket.NewTokenBucket(rate, capacity)
+)
 
 func initWeatherData() error {
-	err := json.Unmarshal(cityRaw, &cityData)
+	err := json.Unmarshal(cityRaw, &cityDatas.citys)
 	if err != nil {
 		return err
 	}
-	cityData.Datas = make(map[string]cityInfo)
-	cityData.DatasList = make(map[string]cityInfo)
-	for _, province := range cityData.Provinces {
-		if _, ifSet := cityData.Datas[province.Name]; !ifSet {
-			cityData.Datas[province.Name] = cityInfo{
-				ID:   province.ID,
-				Name: province.Name,
-				Code: "",
-				Son:  make(map[string]cityInfo),
-			}
-		}
-		for _, city := range province.Citys {
-			if _, ifSet := cityData.Datas[province.Name].Son[city.Name]; !ifSet {
-				cityData.Datas[province.Name].Son[city.Name] = cityInfo{
-					ID:   city.ID,
-					Name: city.Name,
+	cityDatas.Datas = make(map[string]cityCache)
+	cityDatas.DatasList = make(map[string]cityCache)
+	for _, cityData := range cityDatas.citys {
+		for _, province := range cityData.Regions {
+			if _, ifSet := cityDatas.Datas[province.Name]; !ifSet {
+				cityDatas.Datas[province.Name] = cityCache{
+					Name: province.Name,
 					Code: "",
-					Son:  make(map[string]cityInfo),
+					Son:  make(map[string]cityCache),
 				}
 			}
-			for _, county := range city.Countys {
-				if _, ifSet := cityData.Datas[province.Name].Son[city.Name].Son[county.Name]; !ifSet {
-					cityData.Datas[province.Name].Son[city.Name].Son[county.Name] = cityInfo{
-						ID:   county.ID,
-						Name: county.Name,
-						Code: county.Code,
-						Son:  nil,
+			for _, city := range province.Citys {
+				if _, ifSet := cityDatas.Datas[province.Name].Son[city.Name]; !ifSet {
+					cityDatas.Datas[province.Name].Son[city.Name] = cityCache{
+						Name: city.Name,
+						Code: "",
+						Son:  make(map[string]cityCache),
 					}
-					cityData.DatasList[county.Code] = cityData.Datas[province.Name].Son[city.Name].Son[county.Name]
+				}
+				for _, county := range city.Locations {
+					if _, ifSet := cityDatas.Datas[province.Name].Son[city.Name].Son[county.Location]; !ifSet {
+						cityDatas.Datas[province.Name].Son[city.Name].Son[county.Location] = cityCache{
+							Name: county.Location,
+							Code: county.LocationID,
+							Son:  nil,
+						}
+						cityDatas.DatasList[county.LocationID] = cityDatas.Datas[province.Name].Son[city.Name].Son[county.Location]
+					}
 				}
 			}
 		}
@@ -122,25 +165,122 @@ func initWeatherData() error {
 	return nil
 }
 
-func GetWeather(cityID string) error {
-	// https://www.sojson.com/api/weather.html
-	if cityData.Name == "" {
-		if err := initWeatherData(); err != nil {
-			return err
+func checkRespCode(info *CityInfo) error {
+	if info.Code == "200" {
+		return nil
+	} else if info.Code == "204" {
+		return errors.New("城市数据不存在")
+	} else if info.Code == "400" {
+		return errors.New("请求错误")
+	} else if info.Code == "401" {
+		return errors.New("认证失败,请联系管理员")
+	} else if info.Code == "402" {
+		return errors.New("超过访问次数,请联系管理员")
+	} else if info.Code == "403" {
+		return errors.New("无访问权限,请联系管理员")
+	} else if info.Code == "404" {
+		return errors.New("数据或地区不存在")
+	} else if info.Code == "429" {
+		return errors.New("超过限制访问次数,请稍后再试")
+	} else if info.Code == "500" {
+		return errors.New("服务器内部错误,请联系管理员")
+	} else {
+		return errors.New(fmt.Sprintf("未知错误,错误码:%s", info.Code))
+	}
+}
+
+// GetCurrentWeather 获取当前天气
+//
+// cityID: 城市ID
+// 内置限流,每秒10个令牌,令牌桶容量30个
+func GetCurrentWeather(cityID string) (ret CityInfo, raw []byte, err error) {
+	{
+		// 3次重试
+		max := 3
+		status := false
+		if !tb.TryConsume() {
+			for i := 0; i < max-1; i++ {
+				if tb.TryConsume() {
+					status = true
+					break
+				}
+			}
+			if !status {
+				// 限流
+				return ret, nil, errors.New("服务器繁忙,请稍后再试")
+			}
 		}
 	}
-	if _, ifSet := cityData.DatasList[cityID]; !ifSet {
-		return errors.New("城市ID不存在")
+	if len(cityDatas.citys) == 0 {
+		if err := initWeatherData(); err != nil {
+			return ret, nil, err
+		}
 	}
-	resp, err := http.Get("http://t.weather.sojson.com/api/weather/city/" + cityID)
+	if _, ifSet := cityDatas.DatasList[cityID]; !ifSet {
+		return ret, nil, errors.New("城市ID不存在")
+	}
+	url := fmt.Sprintf("%s/weather/now?location=%s&key=%s",
+		configs.Data.OpenAPI.QWeather.Host,
+		cityID,
+		configs.Data.OpenAPI.QWeather.PrivateKEY,
+	)
+	resp, err := http.Get(url)
 	if err != nil {
-		return err
+		return ret, nil, err
 	}
 	defer resp.Body.Close()
 	respData, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return ret, nil, err
 	}
-	println(respData)
-	return nil
+	err = json.Unmarshal(respData, &ret)
+	if err != nil {
+		return ret, nil, err
+	}
+	err = checkRespCode(&ret)
+	if err != nil {
+		return ret, nil, err
+	}
+	return ret, respData, nil
+
+	// https://www.sojson.com/api/weather.html
+	//{
+	//	// 3次重试
+	//	max := 3
+	//	status := false
+	//	if !tb.TryConsume() {
+	//		for i := 0; i < max-1; i++ {
+	//			if tb.TryConsume() {
+	//				status = true
+	//				break
+	//			}
+	//		}
+	//		if !status {
+	//			// 限流
+	//			return ret, nil, errors.New("服务器繁忙,请稍后再试")
+	//		}
+	//	}
+	//}
+	//if cityData.Name == "" {
+	//	if err := initWeatherData(); err != nil {
+	//		return ret, nil, err
+	//	}
+	//}
+	//if _, ifSet := cityData.DatasList[cityID]; !ifSet {
+	//	return ret, nil, errors.New("城市ID不存在")
+	//}
+	//resp, err := http.Get("http://t.weather.sojson.com/api/weather/city/" + cityID)
+	//if err != nil {
+	//	return ret, nil, err
+	//}
+	//defer resp.Body.Close()
+	//respData, err := io.ReadAll(resp.Body)
+	//if err != nil {
+	//	return ret, nil, err
+	//}
+	//err = json.Unmarshal(respData, &ret)
+	//if err != nil {
+	//	return ret, nil, err
+	//}
+	//return ret, respData, nil
 }

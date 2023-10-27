@@ -25,3 +25,8 @@ Database:
     Host: ""
     Port: 6379
     Password: ""
+
+OpenAPI:
+  QWeather: # 和风天气api
+    Host: "https://devapi.qweather.com/v7"
+    PrivateKEY: "" # 和风天气api的私钥

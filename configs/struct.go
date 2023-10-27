@@ -3,6 +3,7 @@ package configs
 type Model struct {
 	App      App      `yaml:"App"`
 	Database Database `yaml:"Database"`
+	OpenAPI  OpenAPI  `yaml:"OpenAPI"`
 }
 
 type App struct {
@@ -45,4 +46,13 @@ type Mysql struct {
 	Password   string `yaml:"Password"`
 	Charset    string `yaml:"Charset"`
 	RedisCache bool   `yaml:"RedisCache"`
+}
+
+type OpenAPI struct {
+	QWeather QWeather `yaml:"QWeather"`
+}
+
+type QWeather struct {
+	Host       string `yaml:"Host"`
+	PrivateKEY string `yaml:"PrivateKEY"`
 }

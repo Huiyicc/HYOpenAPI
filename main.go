@@ -93,5 +93,4 @@ func InitFunc() {
 	if configs.Data.Database.Mysql.Enable {
 		mysql.InitGorm(configs.Data.Database)
 	}
-
 }
