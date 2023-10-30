@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"hzer/configs"
+	"hzer/pkg/LoadBalance"
 	"hzer/pkg/tokenbucket"
+	"hzer/pkg/util"
 	"io"
 	"net/http"
+	"strconv"
 )
 
 var (
@@ -55,7 +58,7 @@ type cityCache struct {
 	Son  map[string]cityCache // 一层层嵌套的字典,键为省/城市/地区名
 }
 
-type CityInfo struct {
+type CityWeatherInfo struct {
 	Code       string        `json:"code"`
 	UpdateTime string        `json:"updateTime"`
 	FxLink     string        `json:"fxLink"`
@@ -120,9 +123,14 @@ type WeatherStatus struct {
 var (
 	cityDatas cityInteface
 
-	rate     float64 = 10 // 每秒补充x个令牌
-	capacity float64 = 30 // 令牌桶容量为y个
-	tb               = tokenbucket.NewTokenBucket(rate, capacity)
+	rate           float64 = 10 // 每秒补充x个令牌
+	capacity       float64 = 30 // 令牌桶容量为y个
+	tbWeather              = tokenbucket.NewTokenBucket(rate, capacity)
+	tbWeatherIndex         = tokenbucket.NewTokenBucket(rate, capacity)
+
+	// 负载均衡器
+	lbs         = LoadBalance.NewWeightRoundRobinBalance()
+	accountMaps = make(map[string]string)
 )
 
 func initWeatherData() error {
@@ -162,30 +170,39 @@ func initWeatherData() error {
 			}
 		}
 	}
+	for _, v := range configs.Data.OpenAPI.QWeather.PrivateKEYS {
+		if _, ifSet := accountMaps[v.Name]; ifSet {
+			fmt.Println("重复的账号名:", v.Name)
+			continue
+		}
+		weight := strconv.Itoa(util.Ifs(v.Weight == 0, 1, v.Weight))
+		lbs.Add(v.Name, weight)
+		accountMaps[v.Name] = v.Key
+	}
 	return nil
 }
 
-func checkRespCode(info *CityInfo) error {
-	if info.Code == "200" {
+func checkRespCode(code string) error {
+	if code == "200" {
 		return nil
-	} else if info.Code == "204" {
+	} else if code == "204" {
 		return errors.New("城市数据不存在")
-	} else if info.Code == "400" {
+	} else if code == "400" {
 		return errors.New("请求错误")
-	} else if info.Code == "401" {
+	} else if code == "401" {
 		return errors.New("认证失败,请联系管理员")
-	} else if info.Code == "402" {
+	} else if code == "402" {
 		return errors.New("超过访问次数,请联系管理员")
-	} else if info.Code == "403" {
+	} else if code == "403" {
 		return errors.New("无访问权限,请联系管理员")
-	} else if info.Code == "404" {
+	} else if code == "404" {
 		return errors.New("数据或地区不存在")
-	} else if info.Code == "429" {
+	} else if code == "429" {
 		return errors.New("超过限制访问次数,请稍后再试")
-	} else if info.Code == "500" {
+	} else if code == "500" {
 		return errors.New("服务器内部错误,请联系管理员")
 	} else {
-		return errors.New(fmt.Sprintf("未知错误,错误码:%s", info.Code))
+		return errors.New(fmt.Sprintf("未知错误,错误码:%s", code))
 	}
 }
 
@@ -193,24 +210,24 @@ func checkRespCode(info *CityInfo) error {
 //
 // cityID: 城市ID
 // 内置限流,每秒10个令牌,令牌桶容量30个
-func GetCurrentWeather(cityID string) (ret CityInfo, raw []byte, err error) {
-	{
-		// 3次重试
-		max := 3
-		status := false
-		if !tb.TryConsume() {
-			for i := 0; i < max-1; i++ {
-				if tb.TryConsume() {
-					status = true
-					break
-				}
-			}
-			if !status {
-				// 限流
-				return ret, nil, errors.New("服务器繁忙,请稍后再试")
-			}
-		}
-	}
+func GetCurrentWeather(cityID string) (ret CityWeatherInfo, raw []byte, err error) {
+	//{
+	//	// 3次重试
+	//	max := 3
+	//	status := false
+	//	if !tbWeather.TryConsume() {
+	//		for i := 0; i < max-1; i++ {
+	//			if tbWeather.TryConsume() {
+	//				status = true
+	//				break
+	//			}
+	//		}
+	//		if !status {
+	//			// 限流
+	//			return ret, nil, errors.New("服务器繁忙,请稍后再试")
+	//		}
+	//	}
+	//}
 	if len(cityDatas.citys) == 0 {
 		if err := initWeatherData(); err != nil {
 			return ret, nil, err
@@ -222,7 +239,7 @@ func GetCurrentWeather(cityID string) (ret CityInfo, raw []byte, err error) {
 	url := fmt.Sprintf("%s/weather/now?location=%s&key=%s",
 		configs.Data.OpenAPI.QWeather.Host,
 		cityID,
-		configs.Data.OpenAPI.QWeather.PrivateKEY,
+		accountMaps[lbs.Next()],
 	)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -237,20 +254,146 @@ func GetCurrentWeather(cityID string) (ret CityInfo, raw []byte, err error) {
 	if err != nil {
 		return ret, nil, err
 	}
-	err = checkRespCode(&ret)
+	err = checkRespCode(ret.Code)
 	if err != nil {
 		return ret, nil, err
 	}
 	return ret, respData, nil
+}
 
-	// https://www.sojson.com/api/weather.html
+type CityWeatherIndexInfo struct {
+	Code       string        `json:"code"`
+	UpdateTime string        `json:"updateTime"`
+	FxLink     string        `json:"fxLink"`
+	Index      WeatherIndexs `json:"index"` // 生活指数
+}
+type WeatherIndexs struct {
+	Motion    WeatherIndexStatus `json:"motion"`    // 运动指数
+	CarWash   WeatherIndexStatus `json:"carWash"`   // 洗车指数
+	Dress     WeatherIndexStatus `json:"dress"`     // 穿衣指数
+	Fishing   WeatherIndexStatus `json:"fishing"`   // 钓鱼指数
+	UV        WeatherIndexStatus `json:"uv"`        // 紫外线指数
+	Travel    WeatherIndexStatus `json:"travel"`    // 旅游指数
+	Allergy   WeatherIndexStatus `json:"allergy"`   // 过敏指数
+	Comfort   WeatherIndexStatus `json:"comfort"`   // 舒适度指数
+	Cold      WeatherIndexStatus `json:"cold"`      // 感冒指数
+	Air       WeatherIndexStatus `json:"air"`       // 空气污染扩散条件指数
+	Ac        WeatherIndexStatus `json:"ac"`        // 空调开启指数
+	Sunglass  WeatherIndexStatus `json:"sunglass"`  // 太阳镜指数
+	Makeup    WeatherIndexStatus `json:"makeup"`    // 化妆指数
+	Dry       WeatherIndexStatus `json:"dry"`       // 晾晒指数
+	Traffic   WeatherIndexStatus `json:"traffic"`   // 交通指数
+	Sunscreen WeatherIndexStatus `json:"sunscreen"` // 防晒指数
+}
+
+type WeatherIndexStatus struct {
+	Name     string `json:"name"`
+	Level    string `json:"level"`
+	Category string `json:"category"`
+	Text     string `json:"text"`
+}
+
+func convertWeatherIndex(data []byte) (CityWeatherIndexInfo, error) {
+	type cityWeatherIndexRaw struct {
+		Code       string `json:"code"`
+		UpdateTime string `json:"updateTime"`
+		FxLink     string `json:"fxLink"`
+		Daily      []struct {
+			Date     string `json:"date"`
+			Type     string `json:"type"`
+			Name     string `json:"name"`
+			Level    string `json:"level"`
+			Category string `json:"category"`
+			Text     string `json:"text"`
+		} `json:"daily"`
+	}
+	ret := CityWeatherIndexInfo{}
+	raw := cityWeatherIndexRaw{}
+	err := json.Unmarshal(data, &raw)
+	if err != nil {
+		return ret, err
+	}
+	err = checkRespCode(raw.Code)
+	if err != nil {
+		return ret, err
+	}
+	ret.Code = raw.Code
+	ret.UpdateTime = raw.UpdateTime
+	ret.FxLink = raw.FxLink
+	for _, v := range raw.Daily {
+		var tmpStatus *WeatherIndexStatus
+		switch v.Type {
+		case "1":
+			// 运动指数
+			tmpStatus = &ret.Index.Motion
+		case "2":
+			// 洗车指数
+			tmpStatus = &ret.Index.CarWash
+		case "3":
+			// 穿衣指数
+			tmpStatus = &ret.Index.Dress
+		case "4":
+			// 钓鱼指数
+			tmpStatus = &ret.Index.Fishing
+		case "5":
+			// 紫外线指数
+			tmpStatus = &ret.Index.UV
+		case "6":
+			// 旅游指数
+			tmpStatus = &ret.Index.Travel
+		case "7":
+			// 过敏指数
+			tmpStatus = &ret.Index.Allergy
+		case "8":
+			// 舒适度指数
+			tmpStatus = &ret.Index.Comfort
+		case "9":
+			// 感冒指数
+			tmpStatus = &ret.Index.Cold
+		case "10":
+			// 空气污染扩散条件指数
+			tmpStatus = &ret.Index.Air
+		case "11":
+			// 空调开启指数
+			tmpStatus = &ret.Index.Ac
+		case "12":
+			// 太阳镜指数
+			tmpStatus = &ret.Index.Sunglass
+		case "13":
+			// 化妆指数
+			tmpStatus = &ret.Index.Makeup
+		case "14":
+			// 晾晒指数
+			tmpStatus = &ret.Index.Dry
+		case "15":
+			// 交通指数
+			tmpStatus = &ret.Index.Traffic
+		case "16":
+			// 防晒指数
+			tmpStatus = &ret.Index.Sunscreen
+		default:
+			continue
+		}
+		tmpStatus.Name = v.Name
+		tmpStatus.Level = v.Level
+		tmpStatus.Category = v.Category
+		tmpStatus.Text = v.Text
+	}
+	return ret, nil
+}
+
+// GetWeatherIndex 获取当前天气
+//
+// cityID: 城市ID
+// 内置限流,每秒10个令牌,令牌桶容量30个
+func GetWeatherIndex(cityID string) (ret CityWeatherIndexInfo, raw []byte, err error) {
 	//{
 	//	// 3次重试
 	//	max := 3
 	//	status := false
-	//	if !tb.TryConsume() {
+	//	if !tbWeatherIndex.TryConsume() {
 	//		for i := 0; i < max-1; i++ {
-	//			if tb.TryConsume() {
+	//			if tbWeatherIndex.TryConsume() {
 	//				status = true
 	//				break
 	//			}
@@ -261,26 +404,31 @@ func GetCurrentWeather(cityID string) (ret CityInfo, raw []byte, err error) {
 	//		}
 	//	}
 	//}
-	//if cityData.Name == "" {
-	//	if err := initWeatherData(); err != nil {
-	//		return ret, nil, err
-	//	}
-	//}
-	//if _, ifSet := cityData.DatasList[cityID]; !ifSet {
-	//	return ret, nil, errors.New("城市ID不存在")
-	//}
-	//resp, err := http.Get("http://t.weather.sojson.com/api/weather/city/" + cityID)
-	//if err != nil {
-	//	return ret, nil, err
-	//}
-	//defer resp.Body.Close()
-	//respData, err := io.ReadAll(resp.Body)
-	//if err != nil {
-	//	return ret, nil, err
-	//}
-	//err = json.Unmarshal(respData, &ret)
-	//if err != nil {
-	//	return ret, nil, err
-	//}
-	//return ret, respData, nil
+	if len(cityDatas.citys) == 0 {
+		if err := initWeatherData(); err != nil {
+			return ret, nil, err
+		}
+	}
+	if _, ifSet := cityDatas.DatasList[cityID]; !ifSet {
+		return ret, nil, errors.New("城市ID不存在")
+	}
+	url := fmt.Sprintf("%s/indices/1d?type=0&location=%s&key=%s",
+		configs.Data.OpenAPI.QWeather.Host,
+		cityID,
+		accountMaps[lbs.Next()],
+	)
+	resp, err := http.Get(url)
+	if err != nil {
+		return ret, nil, err
+	}
+	defer resp.Body.Close()
+	respData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ret, nil, err
+	}
+	ret, err = convertWeatherIndex(respData)
+	if err != nil {
+		return ret, nil, err
+	}
+	return ret, respData, nil
 }

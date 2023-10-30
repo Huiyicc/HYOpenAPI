@@ -53,6 +53,12 @@ type OpenAPI struct {
 }
 
 type QWeather struct {
-	Host       string `yaml:"Host"`
-	PrivateKEY string `yaml:"PrivateKEY"`
+	Host        string       `yaml:"Host"`
+	PrivateKEYS []PrivateKEY `yaml:"PrivateKEYS"`
+}
+
+type PrivateKEY struct {
+	Name   string `yaml:"Name"`
+	Key    string `yaml:"Key"`
+	Weight int    `yaml:"Weight"`
 }

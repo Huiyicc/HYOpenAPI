@@ -2,6 +2,7 @@ package life
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/garyburd/redigo/redis"
 	"github.com/gin-gonic/gin"
 	appLife "hzer/internal/app/life"
@@ -14,6 +15,18 @@ import (
 func ginGetWeather(ctx *gin.Context) {
 
 	//appLife.GetCurrentWeather()
+}
+
+type weatherResp struct {
+	UpdateTime    string                `json:"updateTime"`
+	WeatherStatus appLife.WeatherStatus `json:"weather_status"`
+	WeatherIndexs appLife.WeatherIndexs `json:"weather_indexs"`
+}
+
+func (c *weatherResp) Parse(status *appLife.CityWeatherInfo, indexs *appLife.CityWeatherIndexInfo) {
+	c.WeatherStatus = status.Now
+	c.WeatherIndexs = indexs.Index
+	c.UpdateTime = time.Now().Format("2006-01-02 15:04:05")
 }
 
 func ginPOSTWeather(ctx *gin.Context) {
@@ -42,7 +55,7 @@ func ginPOSTWeather(ctx *gin.Context) {
 	}
 	timeKey := "weather:" + cityID + ":" + strconv.Itoa(nowDay) + ":" + strconv.Itoa(nowHour)
 	rc := redisPkg.GetCoon()
-	cityInfo := appLife.CityInfo{}
+	cityInfo := weatherResp{}
 	// 判断是否存在
 	value, _ := redis.String(rc.Do("get", timeKey))
 	if value == "" {
@@ -51,14 +64,25 @@ func ginPOSTWeather(ctx *gin.Context) {
 		if err != nil {
 			response.FailJson(ctx, response.FailStruct{
 				Code: 10001,
-				Msg:  err.Error(),
+				Msg:  "获取天气失败",
 			}, false)
+			fmt.Println(err.Error())
 			return
 		}
+		respIndex, respBody, err := appLife.GetWeatherIndex(cityID)
+		if err != nil {
+			response.FailJson(ctx, response.FailStruct{
+				Code: 10001,
+				Msg:  "获取空气指数失败",
+			}, false)
+			fmt.Println(err.Error())
+			return
+		}
+		cityInfo.Parse(&resp, &respIndex)
+		cacheData, _ := json.Marshal(cityInfo)
 		// 设置redis,4小时过期
-		_, _ = rc.Do("set", timeKey, respBody, "ex", 60*60*6)
+		_, _ = rc.Do("set", timeKey, cacheData, "ex", 60*60*6)
 		value = string(respBody)
-		cityInfo = resp
 	} else {
 		err := json.Unmarshal([]byte(value), &cityInfo)
 		if err != nil {

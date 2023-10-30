@@ -29,4 +29,7 @@ Database:
 OpenAPI:
   QWeather: # 和风天气api
     Host: "https://devapi.qweather.com/v7"
-    PrivateKEY: "" # 和风天气api的私钥
+    PrivateKEYS: # 账号列表,自动负载均衡
+      - Name: "" # 账号名称
+        Key: "" # 和风天气api的私钥
+        Weight: 1 # 权重,默认为1,越大越优先使用
